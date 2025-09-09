@@ -9,13 +9,8 @@ use FacturaScripts\Core\Plugins;
 use FacturaScripts\Core\Tools;
 use FacturaScripts\Dinamic\Model\User;
 use Symfony\Component\HttpFoundation\Response;
-use ZipArchive;
+use FacturaScripts\Core\Kernel;
 
-/**
- * Un controlador es básicamente una página o una opción del menú de FacturaScripts.
- *
- * https://facturascripts.com/publicaciones/los-controladores-410
- */
 class SolwedPluginPortal extends Controller
 {
     /** @var array */
@@ -36,6 +31,7 @@ class SolwedPluginPortal extends Controller
         $data['menu'] = 'admin';
         $data['title'] = 'Plugin Portal';
         $data['icon'] = 'fas fa-cloud-download-alt';
+        $data['showonmenu'] = true;
         return $data;
     }
 
@@ -95,13 +91,33 @@ class SolwedPluginPortal extends Controller
             return;
         }
 
+        // Log compatibility warnings but don't block installation
+        $currentFsVersion = $this->getFacturaScriptsVersion();
+        if (isset($pluginInfo['min_version']) && $pluginInfo['min_version'] > $currentFsVersion) {
+            Tools::log()->warning('plugin-incompatible-version', [
+                '%plugin%' => $pluginName,
+                '%required%' => $pluginInfo['min_version'],
+                '%current%' => $currentFsVersion
+            ]);
+        }
+
+        if (isset($pluginInfo['min_php']) && version_compare(PHP_VERSION, $pluginInfo['min_php'], '<')) {
+            Tools::log()->warning('plugin-incompatible-php', [
+                '%plugin%' => $pluginName,
+                '%required%' => $pluginInfo['min_php'],
+                '%current%' => PHP_VERSION
+            ]);
+        }
+
         $downloadUrl = $this->github->getDownloadUrl($pluginInfo);
         $tempFile = tempnam(sys_get_temp_dir(), 'plugin_');
 
         // Download the plugin
         if (!$this->github->downloadPlugin($downloadUrl, $tempFile)) {
             Tools::log()->error('download-failed', ['%plugin%' => $pluginName]);
-            unlink($tempFile);
+            if (file_exists($tempFile)) {
+                unlink($tempFile);
+            }
             return;
         }
 
@@ -118,28 +134,61 @@ class SolwedPluginPortal extends Controller
             Tools::log()->error('plugin-install-error', ['%plugin%' => $pluginName]);
         }
 
-        unlink($tempFile);
+        if (file_exists($tempFile)) {
+            unlink($tempFile);
+        }
     }
 
     private function markInstalledPlugins(): void
     {
         $installedPlugins = Plugins::list();
+        $currentFsVersion = $this->getFacturaScriptsVersion();
 
         foreach ($this->pluginList as &$plugin) {
             $plugin['installed'] = false;
             $plugin['update_available'] = false;
+            $plugin['compatible'] = true;
+            $plugin['compatibility_message'] = '';
+
+            // Check compatibility but don't block installation
+            if (isset($plugin['min_version']) && $plugin['min_version'] > $currentFsVersion) {
+                $plugin['compatible'] = false;
+                $plugin['compatibility_message'] = 'Requires FacturaScripts ' . $plugin['min_version'] . ' or newer (current: ' . $currentFsVersion . ')';
+            }
+
+            // Check PHP compatibility
+            if (isset($plugin['min_php']) && version_compare(PHP_VERSION, $plugin['min_php'], '<')) {
+                $plugin['compatible'] = false;
+                if (!empty($plugin['compatibility_message'])) {
+                    $plugin['compatibility_message'] .= ' | ';
+                }
+                $plugin['compatibility_message'] .= 'Requires PHP ' . $plugin['min_php'] . ' or newer (current: ' . PHP_VERSION . ')';
+            }
 
             foreach ($installedPlugins as $installed) {
                 if ($installed->name === $plugin['name']) {
                     $plugin['installed'] = true;
 
                     // Check if update is available
-                    if ($installed->version < $plugin['version']) {
+                    if (isset($plugin['version']) && $installed->version < $plugin['version']) {
                         $plugin['update_available'] = true;
                     }
                     break;
                 }
             }
         }
+    }
+
+    public function getFacturaScriptsVersion(): float
+    {
+        // Try to get version from constant or config
+        // if (defined(Kernel::version())) {
+        //     return (float) Kernel::version();
+        // }
+
+        // // Fallback to a default version
+        // return 2024.96;
+
+        return (float) Kernel::version();
     }
 }
